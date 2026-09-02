@@ -1,0 +1,26 @@
+version = 2
+okr-version = "0.1.9"
+generated = "1970-01-01T00:00:00Z"
+config-digest = "sha256:0adc50c8e084d11c71db113b0ac0dcfd791b2c87c34fe59e9bd73885b1f36d1e"
+environment-digest = "sha256:eda0adbe62a1c676f9b8f43ec05a8c0cccb9bfba2370a1e343896e9ae33f1893"
+reference = []
+
+[[package]]
+name = "gsDesign"
+version = "3.11.0"
+source = "github::keaven/gsDesign"
+ref = "v3.11.0"
+commit = "a07d8bb56c711a20f68d9e6c5c436f5e89acc613"
+fetch-method = "forge-tarball"
+tree-digest = "sha256:7683e10891c411039fbb3f40522e92957f8004399fa785ca3a2131f89719d821"
+license = "GPL (>= 3)"
+
+[[package]]
+name = "rpact"
+version = "4.4.0"
+source = "github::rpact-com/rpact"
+ref = "v4.4.0"
+commit = "edc3f976d4f23ad19a19359454f5755f03529f70"
+fetch-method = "forge-tarball"
+tree-digest = "sha256:af471e8d8cd0fff01132df327da2d6d492cada2325a4f6808a017f82740919ef"
+license = "LGPL-3"
