@@ -1,0 +1,83 @@
+#include "R.h"
+#include "Rmath.h"
+#include "gsDesign.h"
+
+/**
+ * @brief Compute group sequential boundary crossing probabilities.
+ *
+ * For each drift value in @p xtheta, computes the probability of crossing the
+ * lower boundary @p a and the upper boundary @p b at each analysis time,
+ * following the recursive integration of Jennison & Turnbull (2000, Section
+ * 19.2). Bounds may be infinite (no bound at that analysis). Written with
+ * pointer arguments for R's `.C()` interface (call with `NAOK = TRUE`).
+ *
+ * @param[in] xnanal Number of analyses (`nanal = xnanal[0]`).
+ * @param[in] ntheta Number of drift values (`ntheta = ntheta[0]`).
+ * @param[in] xtheta Drift values (length `ntheta`).
+ * @param[in] I Statistical information at each analysis (length `nanal`).
+ * @param[in] a Lower Z cutoffs at each analysis (length `nanal`).
+ * @param[in] b Upper Z cutoffs at each analysis (length `nanal`).
+ * @param[out] xproblo Lower boundary crossing probabilities, `ntheta`
+ *   contiguous blocks of length `nanal`.
+ * @param[out] xprobhi Upper boundary crossing probabilities, same layout.
+ * @param[in] xr Grid parameter (`r = xr[0]`).
+ * @param[in] method Quadrature method (`GS_QUAD_JT` or `GS_QUAD_GL`).
+ * @return Nothing.
+ */
+void probrej(int *xnanal, int *ntheta, double *xtheta, double *I, double *a,
+             double *b, double *xproblo, double *xprobhi, int *xr,
+             int *method) {
+  int r, i, m1, m2, nanal, k, meth;
+  double theta;
+  double *problo, *probhi;
+  /* note: should allocate zwk & wwk dynamically...*/
+  double mu, sig, zwk[1000], wwk[1000], hwk[1000], zwk2[1000], wwk2[1000],
+      hwk2[1000], *z1, *z2, *w1, *w2, *h, *h2, *tem;
+  r = xr[0];
+  nanal = xnanal[0];
+  meth = method[0];
+  if (nanal < 1)
+    return;
+  for (k = 0; k < ntheta[0]; k++) {
+    theta = xtheta[k];
+    problo = xproblo + k * nanal;
+    probhi = xprobhi + k * nanal;
+    /* compute probability of rejecting at 1st interim analysis */
+    mu = theta * sqrt(I[0]);
+    problo[0] = GS_PNORM_UPPER(mu - a[0]);
+    probhi[0] = GS_PNORM_UPPER(b[0] - mu);
+    if (nanal == 1)
+      continue;
+    /* compute h1 */
+    z1 = zwk;
+    w1 = wwk;
+    h = hwk;
+    sig = gs_kernel_width(I, 0, nanal);
+    m1 = gsgrid(meth, r, mu, a[0], b[0], sig, z1, w1);
+    h1(theta, m1, w1, I[0], z1, h);
+    z2 = zwk2;
+    w2 = wwk2;
+    h2 = hwk2;
+    /* update h and compute rejection probabilities at each interim */
+    for (i = 1; i < nanal; i++) {
+      probhi[i] = probpos(theta, m1, b[i], z1, h, I[i - 1], I[i]);
+      problo[i] = probneg(theta, m1, a[i], z1, h, I[i - 1], I[i]);
+      if (i < nanal - 1) {
+        mu = theta * sqrt(I[i]);
+        sig = gs_kernel_width(I, i, nanal);
+        m2 = gsgrid(meth, r, mu, a[i], b[i], sig, z2, w2);
+        hupdate(theta, w2, m1, I[i - 1], z1, h, m2, I[i], z2, h2);
+        m1 = m2;
+        tem = z1;
+        z1 = z2;
+        z2 = tem;
+        tem = w1;
+        w1 = w2;
+        w2 = tem;
+        tem = h;
+        h = h2;
+        h2 = tem;
+      }
+    }
+  }
+}

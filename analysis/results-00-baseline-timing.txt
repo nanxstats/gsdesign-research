@@ -1,0 +1,55 @@
+gsDesign 3.11.0 
+gsDesign() default (k=3, tt=4):          3.413 ms (median) 
+gsDesign(k=3, test.type=1):              1.480 ms (median) 
+gsDesign(k=3, test.type=2):              1.371 ms (median) 
+gsDesign(k=3, test.type=3):             14.579 ms (median) 
+gsDesign(k=3, test.type=4):              3.434 ms (median) 
+gsDesign(k=3, test.type=5):              1.326 ms (median) 
+gsDesign(k=3, test.type=6):              2.031 ms (median) 
+gsDesign(k=10, test.type=1):             6.305 ms (median) 
+gsDesign(k=10, test.type=2):             5.186 ms (median) 
+gsDesign(k=10, test.type=3):            73.864 ms (median) 
+gsDesign(k=10, test.type=4):             8.747 ms (median) 
+gsDesign(k=3, tt=1, sfu='OF'):            4.247 ms (median) 
+gsSurv() default:                         6.146 ms (median) 
+gsProbability(d=x, 1 theta):              0.072 ms (median) 
+gsProbability(d=x, 50 theta):             0.711 ms (median) 
+gsProbability(d=x10, 50 theta):           6.444 ms (median) 
+raw .C probrej (k=3, 1 theta):            0.013 ms (median) 
+raw .C probrej (k=10, 1 theta):           0.130 ms (median) 
+raw .C probrej (k=10, 50 theta):          6.397 ms (median) 
+raw .C gsbound1 (k=3):                    0.121 ms (median) 
+raw .C gsbound1 (k=10):                   0.822 ms (median) 
+raw .C gsbound (k=10):                    0.606 ms (median) 
+raw .C probrej r=80 (k=10, 1 theta):      2.040 ms (median) 
+[1] "gsprob"
+[1] "gsBound1"
+[1] "gsBound"
+calls in gsDesign(k=3, tt=4): gsprob=20 gsBound1=11 gsBound=0
+calls in gsDesign(k=10, tt=4): gsprob=18 gsBound1=11 gsBound=0
+calls in gsDesign(k=3, tt=3): gsprob=89 gsBound1=59 gsBound=1
+calls in gsDesign(k=3, tt=1): gsprob=10 gsBound1=1 gsBound=0
+calls in gsDesign(k=3, tt=2): gsprob=11 gsBound1=0 gsBound=1
+calls in gsDesign(k=3, tt=6): gsprob=13 gsBound1=3 gsBound=0
+
+--- self-time profile gsDesign(k=3, tt=4) ---
+                       self.time self.pct
+".C"                       0.013    20.97
+"methods::is"              0.010    16.13
+"checkVector"              0.004     6.45
+"stopifnot"                0.004     6.45
+"getClassDef"              0.003     4.84
+".getClassesFromCache"     0.003     4.84
+"c"                        0.003     4.84
+"checkScalar"              0.002     3.23
+
+--- self-time profile gsDesign(k=10, tt=3) ---
+                       self.time self.pct
+".C"                       0.848    68.89
+"methods::is"              0.036     2.92
+"stopifnot"                0.035     2.84
+"checkScalar"              0.032     2.60
+"checkVector"              0.022     1.79
+".getClassesFromCache"     0.020     1.62
+"match.arg"                0.014     1.14
+"getClassDef"              0.014     1.14

@@ -1,0 +1,7 @@
+gsbound1 k=3 one-sided:   8 Newton iterations over 2 analyses (b: 3.0902323 2.5105097 2.0011046)
+gsbound1 k=3 lower bound: 8 Newton iterations over 2 analyses
+gsbound1 k=10 one-sided:  47 Newton iterations over 9 analyses
+gsbound1 k=10 theta=-3.24 (beta-spending style): 53 Newton iterations over 9 analyses, err=0
+gsbound k=10 symmetric:   47 Newton iterations over 9 analyses
+gsbound1 k=3 zero spend at analysis 2: 4 Newton iterations over 2 analyses; b=3.0902 20.0000 1.9688
+pnorm vs 0.5*erfc: max abs diff 2.220e-16, max rel diff (p>1e-30) 2.340e-14

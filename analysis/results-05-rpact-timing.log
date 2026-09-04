@@ -1,0 +1,11 @@
+K= 3  crossing probs (one theta): rpact two-sided    39.5 us | gsDesign probrej    15.0 us || rpact one-sided    39.0 us | gsDesign probrej one-sided    93.5 us
+K= 5  crossing probs (one theta): rpact two-sided   109.7 us | gsDesign probrej    42.5 us || rpact one-sided   107.0 us | gsDesign probrej one-sided   264.9 us
+K=10  crossing probs (one theta): rpact two-sided   279.5 us | gsDesign probrej   128.6 us || rpact one-sided   274.9 us | gsDesign probrej one-sided   695.4 us
+Warning message:
+In microbenchmark(list = list(e), times = times) :
+  less accurate nanosecond times to avoid potential integer overflows
+K= 3  OF-spending bounds: rpact getDesignGroupSequential   2751.0 us (C++ core  1419.8 us) | gsDesign()   1494.2 us (C core gsbound1   115.4 us)
+K= 5  OF-spending bounds: rpact getDesignGroupSequential   8344.4 us (C++ core  6870.0 us) | gsDesign()   2906.4 us (C core gsbound1   312.0 us)
+K=10  OF-spending bounds: rpact getDesignGroupSequential  40258.1 us (C++ core 38290.4 us) | gsDesign()   7041.2 us (C core gsbound1   815.7 us)
+bounds rpact - gsDesign (asOF K=5):  1.43e-11  9.29e-07  4.86e-07  9.21e-08 -1.52e-07 
+DONE

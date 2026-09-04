@@ -1,0 +1,11 @@
+probrej  patch3 vs base: 2.60e-18 4.16e-17
+gsbound1 patch3 vs base: 4.44e-16 4.09e-107
+gsbound  patch3 vs base: 4.44e-16 4.44e-16
+probrej k=10 two-sided base                  94.15 us
+probrej k=10 two-sided patch3                76.43 us
+probrej k=10 one-sided base                 646.51 us
+probrej k=10 one-sided patch3               494.13 us
+gsbound1 k=10 one-sided base                804.98 us
+gsbound1 k=10 one-sided patch3              599.14 us
+gsbound k=10 symmetric base                 568.42 us
+gsbound k=10 symmetric patch3               482.33 us

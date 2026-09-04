@@ -1,1 +1,7 @@
 /deps-src/
+/work/
+/lean/gsquad/.lake/
+/analysis/harness/bench_*
+!/analysis/harness/bench_*.c
+/analysis/harness/base_renamed/
+/analysis/harness/base_gsDesign.h
