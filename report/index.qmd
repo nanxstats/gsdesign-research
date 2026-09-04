@@ -1,0 +1,343 @@
+---
+title: "Numerical integration in gsDesign: the `EXTREMEZ` sentinel, the rpact algorithm, and faster quadrature"
+subtitle: "Research report against gsDesign 3.11.0"
+date: 2026-09-03
+---
+
+```{r setup}
+library(ggplot2)
+library(knitr)
+root <- normalizePath("..")
+rd <- function(f) readRDS(file.path(root, "analysis", f))
+fmt_e <- function(x, d = 1) ifelse(is.na(x), "", formatC(x, format = "e", digits = d))
+fmt_f <- function(x, d = 1) ifelse(is.na(x), "", formatC(x, format = "f", digits = d, big.mark = ","))
+# validated three-slot categorical palette (blue, orange, aqua) and text tokens
+pal <- c("#2a78d6", "#eb6834", "#1baf7a")
+ink <- c(primary = "#0b0b0b", secondary = "#52514e", grid = "#e8e7e3")
+theme_report <- function() {
+  theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = ink[["grid"]], linewidth = 0.3),
+      axis.title = element_text(color = ink[["secondary"]], size = 10),
+      axis.text = element_text(color = ink[["secondary"]]),
+      legend.position = "top", legend.title = element_blank(),
+      legend.text = element_text(color = ink[["primary"]]),
+      plot.title = element_text(color = ink[["primary"]], size = 12, face = "plain"),
+      plot.title.position = "plot"
+    )
+}
+parse_harness <- function(path) {
+  x <- readLines(path)
+  x <- x[grepl(" us$", x)]
+  lab <- trimws(sub("\\s+[0-9.]+ us$", "", x))
+  val <- as.numeric(sub(".*\\s([0-9.]+) us$", "\\1", x))
+  data.frame(label = lab, us = val, stringsAsFactors = FALSE)
+}
+```
+
+# Summary
+
+This report answers three questions about the C implementation of the Jennison & Turnbull (2000, Chapter 19) recursive integration that underlies `gsDesign()`, `gsProbability()`, `gsBound()`, `gsBound1()` and `gsDensity()`. Everything was measured against gsDesign 3.11.0 on an Apple M4 with R 4.6.1 (`clang -O2`). The deliverables are a four-patch series (`patches/`), each of which leaves the full test suite passing, and the analysis scripts under `analysis/`.
+
+1. **`EXTREMEZ` can become `Inf`, and the change is cheap but touches more than the C code.** The constant 20 plays three roles in `gsbound.c` and `gsbound1.c`: the value returned for an analysis with zero incremental spending, the clamp on Newton iterates, and the iteration cap. The R layer mirrors the sentinel in 25 places (`rep(-20, k)`, `bound < 20`, hard-coded 20 for skipped analyses) and `.C()` refuses infinite arguments unless `NAOK = TRUE`. Patch 0002 makes absent bounds `-Inf`/`Inf` end to end. Where it makes a numerical difference: only in the sentinel values themselves and in the probabilities of crossing them (which drop from about 1e-89 to exactly 0); every finite bound, sample size and probability in the 3.11.0 fixtures is reproduced to 1e-13. The only behavior that had to be preserved on purpose is the iterate clamp, which is what lets the R layer repair designs whose targets cannot be attained.
+
+2. **rpact's integration routine is more accurate per grid point but its implementation is slower.** rpact integrates on a uniform grid of 91 points over the continuation region (truncated at -6 and 8) with a composite 7-point Newton-Cotes (Weddle) rule of order 8, whereas gsDesign uses Simpson's rule (order 4) on 213 points. Against exact multivariate normal probabilities, gsDesign at the default `r` = 18 is accurate to about 1e-7 (median 1e-7, worst 3e-7; 2e-6 for 50 analyses), while rpact reaches 1e-10 to 1e-12 with a floor of 1e-9 from its -6 truncation and a degradation to 4e-7 for wide continuation regions with many analyses. In wall time, rpact's Rcpp routine is 2 to 3 times slower than `probrej` for two-sided designs and its bisection-based boundary derivation is 40 times slower than gsDesign's Newton search at 10 analyses. The lesson to take from rpact is the higher-order quadrature, not the code.
+
+3. **Speed can be pushed well beyond the current method, in two tiers.** Patch 0003 keeps the grid and the results (agreement to 1e-16) and makes the core routines 20 to 35 percent faster by restructuring the density update and hoisting a redundant tail-probability pass out of the Newton loop. Patch 0004 adds an opt-in Gauss-Legendre quadrature on the continuation region with an adaptive number of nodes (17 to 136 in the stress cases below, about 35 on average, instead of 213). It is 4 to 9 times faster than 3.11.0 at the C level and about four orders of magnitude more accurate (errors at or below 5e-14 in every stress case, against 1e-7 for the current grid), including cases where the current grid fails outright, such as `gsDesign(k = 50)`. It is enabled with `options(gsDesign.quadrature = "gl")` and changes results only within the accuracy of the default grid.
+
+Every C routine still allocates its work storage once per call as fixed-size stack arrays; the Gauss-Legendre tables are computed once on first use into static storage. Five properties of the guarded Newton update were proved in Lean 4 with Mathlib (`lean/gsquad/`).
+
+# Setup and where the time goes
+
+```{r versions}
+kable(data.frame(
+  Component = c("gsDesign", "rpact", "R", "mvtnorm (reference probabilities)", "Compiler", "Machine", "Lean / Mathlib"),
+  Version = c("3.11.0 (keaven/gsDesign@v3.11.0)", "4.4.0 (rpact-com/rpact@v4.4.0)", "4.6.1", "1.4.2", "clang, -O2 (R defaults)", "Apple M4, 10 cores, macOS", "4.33.0 / v4.33.0")
+))
+```
+
+The algorithm (JT §19.2) propagates a weighted sub-density $h_k$ on a grid of $z$ values from one analysis to the next with the transition kernel (19.4), and evaluates crossing probabilities as one-dimensional sums (19.8). Bounds are found by Newton-Raphson on those sums (§19.4.1). The grid (p. 349) has $12r - 3$ points, two thirds of them uniformly spaced within three standard deviations of the mean $\theta\sqrt{I_k}$ and the rest logarithmically spaced in the tails, trimmed to the continuation region $(a_k, b_k)$.
+
+Profiling `gsDesign()` shows two distinct regimes. For the default design (three analyses, `test.type = 4`, 3.6 ms) only 14 percent of the time is in `.C()`; argument checking through `methods::is()` costs about as much. For designs that iterate on beta spending the C code dominates: `gsDesign(k = 10, test.type = 3)` takes 114 ms, 67 percent of it in `.C()`, through 59 calls of `gsBound1()` and 89 of `gsprob()`.
+
+```{r primitives}
+kable(data.frame(
+  Quantity = c("exp()", "R pnorm() (x in [-3, 3])", "0.5 * erfc() (same range)", "max |pnorm - 0.5 erfc| on [-12, 12]",
+               "Cost of one grid-point pair in hupdate()", "Newton iterations per analysis (gsbound1, gsbound)",
+               "Grid size, no truncation", "Grid size, one-sided design (a = -Inf)", "Grid size, continuation region of the default design"),
+  Value = c("4.5 ns", "21 ns", "8 ns", "2.2e-16", "about 4 ns (one exp)", "about 5 (range 4 to 6)", "213 points", "181 points", "81 points")
+), caption = "Costs of the primitives and sizes of the Jennison & Turnbull grid at r = 18 (standalone C harness, analysis/harness/).")
+```
+
+Two consequences shape everything below. The density update is $O(m_1 m_2)$ exponentials, so its cost is set by the number of grid points squared, and one-sided designs (181 points) are about seven times more expensive than two-sided ones (81 points) although the wide lower tail carries no probability mass. The boundary search costs two `pnorm()` evaluations per grid point per Newton iteration, and in `gsbound1()` one of the two was recomputed on every iteration although it does not depend on the iterate.
+
+# Question 1: `EXTREMEZ` as `Inf`
+
+## What 20 does today
+
+```c
+/* note: EXTREMEZ > 3 + log(r) +  Z(1-alpha) + Z(1-beta) */
+#define EXTREMEZ 20
+...
+if (probhi[i] <= 0.) btem2 = EXTREMEZ;          /* absent bound */
+while ((adelta > tol || bdelta > tol) && j++ < EXTREMEZ) {   /* iteration cap */
+  ...
+  if (btem2 > EXTREMEZ) btem2 = EXTREMEZ;       /* iterate clamp */
+```
+
+In R, `gsDesign.R` passes `rep(-20, k)` as the lower bound of one-sided designs, sets `x$upper$bound[!x$testUpper] <- 20`, searches harm and futility bounds on `c(-20, upper_limit)`, and `gsqplot.R` detects inactive bounds with `bound < 20`. `sequentialPValue()`, `toInteger()`, `gsSurvPower()` and `gsCP()` carry the same sentinel.
+
+## Where the change makes a difference
+
+Three findings decide the design of patch 0002.
+
+**Numerically, nothing changes at the precision of the package.** With the current grid, the sentinel 20 sits 5.4 standard deviations beyond the outermost grid point at `r` = 18 (3 + 4 log 18 = 14.6) and beyond it for every `r` below 71. The table compares `gsProbability()` with a skipped efficacy analysis encoded as 20 versus `Inf`, as a function of the drift at the final analysis.
+
+```{r sentinel}
+s6 <- rd("results-06-sentinel.rds")
+s6 <- s6[s6$r == 18, ]
+kable(data.frame(
+  `Drift at final analysis (theta * sqrt(I_K))` = s6$muK,
+  `Skipped efficacy bound, |diff| upper` = fmt_e(s6$skip_upper_diff),
+  `Skipped futility bound, |diff| lower` = fmt_e(s6$skip_lower_diff),
+  `One-sided design (a = -20 vs -Inf)` = fmt_e(s6$onesided_diff),
+  check.names = FALSE
+), caption = "Absolute differences in crossing probabilities between the sentinel 20 and Inf, r = 18. The upper-bound column is the probability of exceeding z = 20 at the skipped analysis, which Inf turns into an exact 0.")
+```
+
+The regenerated 3.11.0 fixtures (`analysis/results-inf-fixture-behaviour.diff`) confirm this at package level: across 32 `gsDesign()` calls covering all eight test types, boundary families, spending functions and skipped analyses, plus `gsProbability()`, `gsBound()`, `gsBound1()`, `gsDensity()`, `normalGrid()`, conditional and predictive power and sequential p-values, the only lines that change are sentinel values (20 to `Inf`) and their crossing probabilities (about 1e-89 to 0).
+
+**The Newton update can evaluate `0/0`, and only NaN semantics hid it.** When a target probability is zero and the analysis is close enough in information to the previous one for the density to underflow, the update `atem + (problo - plo) / dplo` is `-20 + 0/0`. On 3.11.0 the resulting NaN iterate is discarded because the loop condition `adelta > tol` is false for NaN, so `gsBound1(theta = 0, I = c(1, 1 + 1e-8, 3), probhi = c(0.001, 0, 0.024))` still returns 20 with no error flag. The patched update skips the iteration entirely for a side without a bound and guards an exact hit (`bdelta == 0`) for active sides, so the division branch is only reached with a non-zero derivative. This property, and the fact that each step moves the iterate by at most one unit, are proved over the reals in `lean/gsquad/Gsquad/NewtonStep.lean`.
+
+**The clamp has to stay, under a new name.** Removing it entirely broke a degenerate but reachable path: `gsDesign(k = 3, test.type = 4, n.I = c(300, 600, 860), maxn.IPlan = 900)` with the default `n.fix = 1` asks for beta spending at a drift of 56 standard errors, the targets cannot be attained, and 3.11.0 relies on the clamped iterate converging trivially (`adelta = 0`) so that the R wrapper repairs the crossed bounds afterwards. Without the clamp the search wanders for 20 iterations, the error flag is set, and the design comes back with negative probabilities. Patch 0002 therefore keeps `GS_ZCLAMP = 20` as a safeguard on the iterate only (it cannot affect a legitimate bound, which would require a target below `pnorm(-20)`), while an absent bound is `-Inf`/`Inf`.
+
+## What the patch changes
+
+- C: `gsbound.c`, `gsbound1.c` return `-Inf`/`Inf` for a non-positive target and skip that side of the iteration; `GS_MAXITER = 20` and `GS_ZCLAMP = 20` replace the three-way `EXTREMEZ`; `0/0` guard.
+- R: `NAOK = TRUE` on all seven `.C()` calls with explicit `anyNA()` validation; `rep(-Inf, k)` and `is.finite()` replace the sentinel; the iterative design loops compare bound vectors through `gsBoundChange()` because `Inf - Inf` is NaN; root-search intervals stay finite (`c(-20, min(upper, 20))`); `gsDensity()` no longer reads a NULL lower bound for one-sided designs; `gsBoundCP()` and the predictive power rows of `gsBoundSummary()` report `NA` at an analysis without a bound instead of evaluating at z = 20.
+- Tests: three files that asserted the value 20 were updated; the pinned fixtures were regenerated (diff above); `print(gsBound())` snapshots show `Inf`.
+
+The full suite passes (3777 expectations). The change is breaking for user code that compares bounds with 20, and it changes what `gsBoundCP()` returns at a skipped analysis (`NA` instead of 1).
+
+# Question 2: the rpact integration routine
+
+## What rpact does
+
+`getGroupSequentialProbabilitiesCpp()` (`f_design_group_sequential.cpp`) implements the same recursion with three differences:
+
+- **Grid.** A uniform grid of `C_CONST_NEWTON_COTES_2 * 6 + 1 = 91` points over the continuation region of each analysis, truncated to `[-6, 8]` (`C_FUTILITY_BOUNDS_DEFAULT`, `C_UPPER_BOUNDS_DEFAULT`); two-sided designs with inner bounds use two 49-point panels.
+- **Rule.** A composite 7-point closed Newton-Cotes rule (Weddle's rule, weights 41, 216, 27, 272, 27, 216, 41 over 140), which is exact for polynomials of degree 7 and has error $O(h^8)$, against Simpson's $O(h^4)$.
+- **Boundary search.** Bisection on `[0, 8]` with up to 100 iterations, each evaluating the whole recursion up to the current analysis, instead of Newton-Raphson on the last stage's sums.
+
+The claim that this is a better integration routine is not made in the package sources; it is tested here directly.
+
+## Accuracy
+
+Reference probabilities were computed with `mvtnorm::pmvnorm(algorithm = Miwa(steps = 4096))`, a deterministic method accurate to about 1e-10 for up to five analyses. Errors are the maximum absolute error over all analyses and both boundaries.
+
+```{r acc02}
+a2 <- rd("results-02-accuracy.rds")
+tab <- data.frame(
+  Design = a2$design, `theta / delta` = a2$theta,
+  `gsDesign r=6` = fmt_e(pmax(a2$gs_r6.upper, a2$gs_r6.lower)),
+  `gsDesign r=18` = fmt_e(pmax(a2$gs_r18.upper, a2$gs_r18.lower)),
+  `gsDesign r=36` = fmt_e(pmax(a2$gs_r36.upper, a2$gs_r36.lower)),
+  `gsDesign r=80` = fmt_e(pmax(a2$gs_r80.upper, a2$gs_r80.lower)),
+  rpact = fmt_e(pmax(a2$rpact.upper, a2$rpact.lower)),
+  check.names = FALSE)
+kable(tab, caption = "Maximum absolute error of crossing probabilities against exact multivariate normal probabilities (analysis/02-accuracy-rpact.R). rpact called through its C++ routine with the shifted decision matrix it uses for power.")
+```
+
+Three observations. gsDesign at `r` = 18 is accurate to about 1e-7, better than the 1e-6 quoted by Jennison & Turnbull for `r` = 16, and the error is largest under drift, where the continuation region falls in the sparse part of the grid. Increasing `r` to 80 (957 points, 20 times the cost) gains three digits. rpact is typically 100 times more accurate than gsDesign at `r` = 18 with 91 points, and its constant 9.9e-10 lower-bound error in one-sided designs is exactly `pnorm(-6)`, the mass it assigns to a futility stop that does not exist.
+
+The rpact scheme does not scale as well as its best cases suggest. With many analyses or a wide continuation region, 91 uniform points are too few: in the stress study below, a uniform Weddle grid of 91 points on a wider window than rpact's reaches 4e-7 for a one-sided design with 20 analyses and 1e-6 when an interim has no bound at all.
+
+## Speed
+
+```{r rp05}
+r5 <- rd("results-05-rpact-timing.rds")$timing
+cross <- do.call(rbind, r5[sapply(r5, function(d) d$task[1] == "crossing probabilities")])
+bnd <- do.call(rbind, r5[sapply(r5, function(d) d$task[1] == "OF-spending bounds")])
+kable(data.frame(K = cross$K,
+  `rpact, two-sided` = fmt_f(cross$rpact_two_sided_us), `gsDesign probrej, two-sided` = fmt_f(cross$gsDesign_two_sided_us),
+  `rpact, one-sided` = fmt_f(cross$rpact_one_sided_us), `gsDesign probrej, one-sided` = fmt_f(cross$gsDesign_one_sided_us),
+  check.names = FALSE), caption = "Microseconds per evaluation of all crossing probabilities for one drift value (analysis/05-rpact-timing.R).")
+kable(data.frame(K = bnd$K,
+  `rpact getDesignGroupSequential()` = fmt_f(bnd$rpact_R_us), `rpact C++ core` = fmt_f(bnd$rpact_cpp_us),
+  `gsDesign()` = fmt_f(bnd$gsDesign_R_us), `gsDesign C core (gsbound1)` = fmt_f(bnd$gsDesign_c_us),
+  check.names = FALSE), caption = "Microseconds to derive O'Brien-Fleming-type spending bounds for a one-sided design.")
+```
+
+Despite 5.5 times fewer grid points, rpact's routine is slower than `probrej` for two-sided designs because of Rcpp overhead (vector allocation and `pnorm` sugar per stage); it is faster for one-sided designs, where gsDesign's grid is widest. Boundary derivation is where the difference is largest: bisection re-runs the full recursion up to 100 times per analysis, so rpact's C++ core takes 37 ms for ten analyses against 0.8 ms for `gsbound1`. The two packages' O'Brien-Fleming bounds for five analyses differ by up to 9e-7, consistent with gsDesign's quadrature error propagated through the boundary search.
+
+**Verdict.** The quadrature rule is the transferable idea: a higher-order rule needs far fewer points for the same accuracy, and the sub-density is analytic on the continuation region, which is exactly the setting in which high-order rules pay off. rpact's fixed 91-point uniform grid and its truncation at -6 are not; the adaptive Gauss-Legendre scheme of patch 0004 keeps the idea and removes both limitations.
+
+# Question 3: pushing the speed
+
+## Tier 1: same grid, same results (patch 0003)
+
+Three changes preserve the grid, the weights and the order of summation, so the results agree with 3.11.0 to rounding (1e-17 in probabilities, 4e-16 in bounds across the harness designs):
+
+- `hupdate()` precomputes the scaled previous grid $c_j = (z_j\sqrt{I_{k-1}} + \theta\Delta_k)/\sqrt{\Delta_k}$ and the normalizing factor once per call, so the inner loop is one subtraction, one multiplication, one `exp()` and one multiply-add per pair (the previous loop also had a division per pair).
+- `gsbound1()` computes the lower-tail probability `plo` once per analysis, after convergence, instead of on every Newton iteration; this is exactly the same sum in the same order as before.
+- The density scale factor is applied once per iteration instead of once per grid point, in both search routines; shared prototypes live in `gsDesign.h`.
+
+A `GS_PNORM_LOWER/UPPER` macro wraps the normal tail probability. The default remains R's `pnorm()`; compiling with `-DGS_USE_ERFC` uses the C library `erfc()`, which on this platform agrees with `pnorm()` to 2.2e-16 absolute and is 2.6 times faster. It is not enabled by default because its accuracy depends on the platform's libm.
+
+```{r p3}
+h3 <- parse_harness(file.path(root, "analysis/results-harness-patch3.txt"))
+h3$config <- ifelse(grepl("patch3$", h3$label), "patch 0003", "3.11.0")
+h3$task <- trimws(sub("\\s+(base|patch3)$", "", h3$label))
+w3 <- reshape(h3[, c("task", "config", "us")], idvar = "task", timevar = "config", direction = "wide")
+names(w3) <- sub("us\\.", "", names(w3))
+w3$speedup <- w3[["3.11.0"]] / w3[["patch 0003"]]
+kable(data.frame(Routine = w3$task, `3.11.0 (us)` = fmt_f(w3[["3.11.0"]]), `patch 0003 (us)` = fmt_f(w3[["patch 0003"]]), Speedup = fmt_f(w3$speedup, 2), check.names = FALSE),
+      caption = "C-level timings of the pristine routines and patch 0003 (analysis/harness/bench_p3.c).")
+```
+
+## Tier 2: Gauss-Legendre quadrature on the continuation region (patch 0004)
+
+### Why it works
+
+At every analysis the recursion integrates $g_k(z)\,q(z)$ over the continuation region $(a_k, b_k)$, where $g_k$ is the sub-density (a Gaussian convolved with truncated Gaussians, hence analytic) and $q$ is either the normal kernel to the next analysis or a normal tail probability. Gauss-Legendre quadrature with $n$ nodes on a finite interval converges geometrically for analytic integrands, whereas Simpson's rule converges as $n^{-4}$. The only parameter that matters is how many nodes are needed to resolve the narrowest feature of the integrand, which is the width $\sigma = \sqrt{\Delta I / I}$ of the normal kernel between neighbouring analyses (the sub-density inherits features as sharp as the kernel that produced it, and the next kernel sets how fast $q$ varies). The node count is therefore chosen per analysis as
+
+$$ n_k = \left\lceil \left(8 + 3\,\frac{W_k}{\min(\sigma_{k}, \sigma_{k+1})}\right)\frac{r}{18} \right\rceil, $$
+
+rounded up to a fixed menu of sizes between 8 and 992, where $W_k$ is the width of the continuation region after replacing an infinite bound by $\theta\sqrt{I_k} \pm 8$ (`pnorm(-8)` is 6e-16). Nodes and weights for the menu are computed once by Newton iteration on Legendre polynomials and kept in static storage; each call still uses the same fixed-size stack work arrays as before. `r` keeps its meaning as a resolution control and acts as a multiplier on the node count.
+
+### Accuracy versus number of points
+
+```{r fig-accuracy, fig.cap="Maximum error over 7 designs and 5 drift values (35 cases, analysis/03-quadrature-prototype.R) as a function of the mean number of grid points actually used per analysis. Exact references from mvtnorm (K <= 5); for K = 10 and 20 the reference is the average of two independent high-resolution schemes that agree to about 5e-10, which is the visible floor. The diamond is the adaptive rule used by patch 0004."}
+q3 <- rd("results-03-quadrature.rds")$summary
+q3$family <- ifelse(grepl("^JT", q3$method), "Jennison & Turnbull grid + Simpson (gsDesign)",
+             ifelse(grepl("Weddle", q3$method), "Uniform grid + Weddle (rpact-style)",
+             ifelse(grepl("^Gauss", q3$method), "Gauss-Legendre, fixed n",
+             ifelse(grepl("adaptive n=8\\+3", q3$method), "Gauss-Legendre, adaptive (patch 0004)", NA))))
+q3 <- q3[!is.na(q3$family), ]
+lines <- q3[q3$family != "Gauss-Legendre, adaptive (patch 0004)", ]
+adapt <- q3[q3$family == "Gauss-Legendre, adaptive (patch 0004)", ]
+ends <- do.call(rbind, lapply(split(lines, lines$family), function(d) d[which.max(d$mean_pts), ]))
+ggplot(lines, aes(mean_pts, max_err, color = family)) +
+  geom_line(linewidth = 0.7) + geom_point(size = 2.2) +
+  geom_point(data = adapt, aes(mean_pts, max_err), color = pal[3], shape = 18, size = 4.5, inherit.aes = FALSE) +
+  annotate("text", x = adapt$mean_pts, y = adapt$max_err * 2.2, label = "adaptive rule", color = ink[["primary"]], size = 3.3, hjust = 0.5) +
+  geom_text(data = ends, aes(label = c("Gauss-Legendre", "JT + Simpson", "uniform + Weddle")[match(family, c("Gauss-Legendre, fixed n", "Jennison & Turnbull grid + Simpson (gsDesign)", "Uniform grid + Weddle (rpact-style)"))]),
+            nudge_x = 0.04, hjust = 0, size = 3.3, show.legend = FALSE) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.25))) +
+  scale_y_log10(breaks = 10^seq(-16, -2, 2), labels = function(x) formatC(x, format = "e", digits = 0)) +
+  scale_color_manual(values = c("Gauss-Legendre, fixed n" = pal[3], "Jennison & Turnbull grid + Simpson (gsDesign)" = pal[1], "Uniform grid + Weddle (rpact-style)" = pal[2])) +
+  labs(x = "mean number of grid points per analysis (log scale)", y = "maximum absolute error (log scale)", title = "Accuracy of the recursion by quadrature rule") +
+  theme_report() + guides(color = guide_legend(nrow = 1))
+```
+
+```{r acc03-table}
+kable(data.frame(Method = q3$method, `Mean points` = round(q3$mean_pts), `Max error` = fmt_e(q3$max_err), `Median error` = fmt_e(q3$median_err), check.names = FALSE),
+      caption = "Data behind the figure.")
+```
+
+Two facts stand out. The current grid at `r` = 18 uses 76 points on average (after trimming to the continuation region) for a maximum error of 3e-7, and gains only one digit per doubling of `r`. Gauss-Legendre with 32 nodes already matches `r` = 80, and 48 nodes reach the reference floor. The adaptive rule spends its nodes where they are needed: 17 to 136 per analysis in the stress cases below (the largest counts go to the narrow-then-wide designs), 35 on average over the 35 cases of the figure.
+
+### Stress cases
+
+The stress designs target the situations in which the current grid is known to struggle (Jennison & Turnbull recommend a larger `r` when an information increment is below one percent) and situations the earlier tables do not cover: 50 analyses, an interim without any bound, a narrow information increment followed by a wide one, and drifts up to five times the design effect. The reference here is Gauss-Legendre with 200 nodes; three independent high-resolution schemes (Gauss-Legendre with 160 nodes, the Jennison & Turnbull grid with `r` = 160, a uniform Weddle grid with 721 points) agree with it to the precision shown in the first table, which bounds the reference error.
+
+```{r floor}
+s3 <- rd("results-03b-stress.rds")
+kable(data.frame(Design = s3$floor$design, `GL200 vs GL160` = fmt_e(s3$floor$gl200_gl160), `GL200 vs JT r=160` = fmt_e(s3$floor$gl200_jt160), `GL200 vs Weddle 721` = fmt_e(s3$floor$gl200_wed721),
+                 `Adaptive nodes (min to max)` = paste(s3$floor$n_adapt_min, "to", s3$floor$n_adapt_max), check.names = FALSE),
+      caption = "Agreement between high-resolution schemes (maximum over analyses, boundaries and five drift values), and the node counts chosen by the adaptive rule.")
+e3 <- s3$errors
+sel <- c("JT r=18", "JT r=80", "Weddle n=91", "GL n=32", "GL n=48", "GLad 8+3W/s")
+e3 <- e3[e3$method %in% sel, ]
+wide <- reshape(e3[, c("design", "method", "max_err")], idvar = "design", timevar = "method", direction = "wide")
+names(wide) <- sub("max_err\\.", "", names(wide))
+wide <- wide[, c("design", sel)]
+out <- wide; for (m in sel) out[[m]] <- fmt_e(wide[[m]])
+names(out) <- c("Design", "gsDesign r=18", "gsDesign r=80", "uniform Weddle 91", "GL 32 nodes", "GL 48 nodes", "GL adaptive (patch 0004)")
+kable(out, caption = "Maximum absolute error against the 200-node reference (analysis/03b-reference-floor.R). Drift values 0, delta, 2 delta, 5 delta and -delta.")
+```
+
+The current grid fails in two of these cases before any accuracy comparison: `gsDesign(k = 50, test.type = 4)` and `gsDesign(k = 3, test.type = 4, timing = c(0.5, 0.995))` stop with "False negative rates not achieved" at `r` = 18, because the boundary search cannot reproduce the beta spending on the coarse grid (the stress designs were therefore built from `gsProbability()` inputs). With the adaptive Gauss-Legendre rule both designs are derived normally.
+
+The narrow-then-wide case is the one that shaped the rule. With the increment out of an analysis alone, a design with information 1, 1.01, 3 and no bound at the middle analysis gave a final bound 6e-4 away from the equivalent two-analysis design, because the sub-density after the narrow step carries an edge of width 0.1 that the next, coarse grid could not resolve. Sizing the grid by the smaller of the neighbouring kernel widths fixes it (1e-7 down to an increment of one tenth of a percent, 2e-6 at one hundredth of a percent), and this scenario is a regression test in patch 0004. Below that, resolution is capped at 992 nodes and both methods degrade gradually; the current grid is already off by 0.25 in the bound at an increment of 1e-4.
+
+### Speed
+
+```{r fig-harness, fig.cap="C-level time per call for the routines of gsDesign 3.11.0, patch 0003 (same grid) and patch 0004 with Gauss-Legendre, for the default three-analysis design and a ten-analysis design, one- and two-sided (analysis/harness/bench_v2.c, medians of repeated calls)."}
+hv <- parse_harness(file.path(root, "analysis/results-harness-v2.txt"))
+hv$config <- ifelse(grepl("v2 GL$", hv$label), "patch 0004 (Gauss-Legendre)", ifelse(grepl("v2 JT$", hv$label), "patch 0003 (same grid)", "gsDesign 3.11.0"))
+hv$task <- gsub("\\s+", " ", trimws(sub("\\s+(base|v2 JT|v2 GL)$", "", hv$label)))
+hv$task <- factor(hv$task, levels = rev(unique(hv$task)))
+hv$config <- factor(hv$config, levels = c("gsDesign 3.11.0", "patch 0003 (same grid)", "patch 0004 (Gauss-Legendre)"))
+ggplot(hv, aes(us, task, color = config)) +
+  geom_line(aes(group = task), color = ink[["grid"]], linewidth = 0.6) +
+  geom_point(size = 3) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000), labels = c("1", "10", "100", "1,000")) +
+  scale_color_manual(values = pal) +
+  labs(x = "microseconds per call (log scale)", y = NULL, title = "Core routine timings") +
+  theme_report() + guides(color = guide_legend(nrow = 1))
+```
+
+```{r harness-table}
+wv <- reshape(hv[, c("task", "config", "us")], idvar = "task", timevar = "config", direction = "wide")
+names(wv) <- sub("us\\.", "", names(wv))
+kable(data.frame(Routine = as.character(wv$task), `3.11.0 (us)` = fmt_f(wv[["gsDesign 3.11.0"]]), `patch 0003 (us)` = fmt_f(wv[["patch 0003 (same grid)"]]), `patch 0004 GL (us)` = fmt_f(wv[["patch 0004 (Gauss-Legendre)"]]),
+                 `Speedup 0003` = fmt_f(wv[["gsDesign 3.11.0"]] / wv[["patch 0003 (same grid)"]], 2), `Speedup 0004` = fmt_f(wv[["gsDesign 3.11.0"]] / wv[["patch 0004 (Gauss-Legendre)"]], 1), check.names = FALSE),
+      caption = "Data behind the figure. Compiling patch 0003 or 0004 with -DGS_USE_ERFC gives a further 10 to 25 percent on the boundary search (analysis/results-harness-v2-erfc.txt).")
+```
+
+```{r e2e}
+files <- c(baseline = "results-07-e2e-baseline.rds", jt = "results-07-e2e-jt.rds", gl = "results-07-e2e-gl.rds")
+have <- file.exists(file.path(root, "analysis", files))
+e2 <- do.call(rbind, lapply(files[have], rd))
+w <- reshape(e2, idvar = "task", timevar = "config", direction = "wide")
+names(w) <- sub("ms\\.", "", names(w))
+w$task <- factor(w$task, levels = rev(unique(e2$task)))
+cols <- intersect(c("baseline", "jt", "gl"), names(w))
+tab <- data.frame(Task = as.character(w$task))
+if ("baseline" %in% cols) tab[["3.11.0 (ms)"]] <- fmt_f(w$baseline, 2)
+if ("jt" %in% cols) tab[["patches 0002-0003 (ms)"]] <- fmt_f(w$jt, 2)
+if ("gl" %in% cols) { tab[["patch 0004, GL option (ms)"]] <- fmt_f(w$gl, 2); tab[["Speedup GL"]] <- fmt_f(w$baseline / w$gl, 1) }
+kable(tab, caption = "End-to-end timings of user-facing functions, medians of repeated calls in fresh R sessions (analysis/07-benchmark-e2e.R).")
+```
+
+At the R level the gains are bounded by the work outside C. `gsProbability()` over 50 drift values for a ten-analysis design is 5 times faster, one-sided and beta-spending designs with ten analyses 2 to 2.5 times, while the default three-analysis design and `gsSurv()` are limited by R-level work (argument checking through `methods::is()`, survival calculations) and gain little. Patches 0002 and 0003 alone change end-to-end times by only a few percent because the C share of these calls is modest. That overhead (`checkScalar()`/`checkVector()` through `methods::is()`) is the next thing to look at for the small-design case, but it is outside the scope of the integration algorithm.
+
+### Behavior of the option
+
+- `options(gsDesign.quadrature = "gl")` switches every computation, including those inside `gsDesign()`'s sizing iterations, `gsSurv()`, `toInteger()`, `gsBoundSummary()` and the conditional and predictive power helpers. The default `"jt"` is unchanged. `normalGrid()` always returns the Jennison & Turnbull grid.
+- Results differ from the default by no more than the default's own error: bounds and sample sizes of the 32 pinned designs agree to 1e-5 relative, crossing probabilities to 5e-7, and the exact-reference tests pass at 2e-9.
+- Bounds with `a > b` at an analysis (crossed bounds, which `gsBound1()` normally repairs) leave an empty continuation region; Gauss-Legendre assigns it no mass, so later probabilities are 0, whereas the current grid carries negative Simpson weights there. Infinite bounds and empty regions are covered by tests.
+
+## Ideas evaluated and not pursued
+
+- **Geometric recurrence for the exponentials on the uniform part of the JT grid.** The kernel on a uniformly spaced grid satisfies a two-term multiplicative recurrence that replaces `exp()` by two multiplications per pair (about 3x on the density update). It only covers the central two thirds of the grid, adds run-detection logic, and is made irrelevant by the node-count reduction of tier 2.
+- **The likelihood-ratio identity (JT 19.13) for many drift values.** With Gauss-Legendre the nodes no longer depend on the drift when both bounds are finite, so one recursion could serve all drift values of `gsProbability()`. Worth doing if plots over dense drift grids become a bottleneck; not needed for the designs measured here.
+- **FFT-based convolution.** The update is a convolution in the score scale, but with 20 to 80 nodes the quadratic cost is already a few microseconds.
+- **Replacing `pnorm()` by `erfc()` by default.** Kept opt-in for portability; the gain is real but platform-dependent.
+
+# Formal checks
+
+`lean/gsquad/Gsquad/NewtonStep.lean` (Lean 4.33.0, Mathlib v4.33.0) models the guarded update of patch 0002 for both bounds and proves, over the reals:
+
+- `upperStep_newton_branch_deriv_ne_zero` and `lowerStep_newton_branch_deriv_ne_zero`: the division branch is only reached when the derivative is non-zero, so the update never evaluates `0/0`;
+- `abs_upperStep_sub_le_one` and `abs_lowerStep_sub_le_one`: every branch moves the iterate by at most one unit when the derivative has the sign the algorithm assumes;
+- `abs_iterate_sub_le`: after `n` iterations the iterate is within `n` of its starting value, so the iteration cap bounds the excursion of the search.
+
+These are statements about the real-number algorithm; floating-point rounding is outside their scope, which is why the numerical tests remain the primary evidence.
+
+# Deliverables and reproducibility
+
+```{r patches}
+kable(data.frame(
+  Patch = c("0001", "0002", "0003", "0004"),
+  Content = c("Regression tests pinning 3.11.0 (fixtures to 13 digits), exact-reference tests, snapshot tests",
+              "Absent bounds as -Inf/Inf end to end; Newton guards; NAOK; NA-safe R loops; NEWS",
+              "Same-grid performance work; GS_PNORM macros with optional erfc; prototypes in gsDesign.h",
+              "Gauss-Legendre quadrature (gsquad.c), method argument on the four C entry points, gsDesign.quadrature option, tests, documentation"),
+  `Full suite` = c("3776 expectations pass", "3777 pass", "3777 pass", "3928 pass"),
+  check.names = FALSE), caption = "The patch series in patches/. Apply with git am in order; each patch builds and passes devtools::test().")
+```
+
+The numbers in this report come from the scripts in `analysis/`: `00` (baseline profile), `01`/`06` (sentinel probes and differences), `02` (accuracy against mvtnorm, with rpact), `03`/`03b` (quadrature prototype and stress study, `quad-lib.R`), `04` (fixture generation), `05` (rpact timings), `07` (end-to-end timings), and the C harness under `analysis/harness/` (`bench_baseline.c`, `bench_iters.c`, `bench_p3.c`, `bench_v2.c`, built against libR). The working copy in which the patches were developed is a plain git repository under `work/gsDesign`.

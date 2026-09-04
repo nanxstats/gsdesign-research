@@ -1,0 +1,21 @@
+project:
+  type: default
+  output-dir: ../docs
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    code-tools: false
+    fig-width: 7.5
+    fig-height: 4.2
+    df-print: kable
+
+execute:
+  echo: false
+  warning: false
+  message: false
