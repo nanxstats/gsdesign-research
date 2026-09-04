@@ -1,0 +1,33 @@
+probrej k=10 two-sided  v2JT vs base: max|dp| = 2.60e-18 (upper) 4.16e-17 (lower)
+probrej k=10 one-sided  v2JT vs base: max|dp| = 1.73e-18 (upper) 7.73e-90 (lower)
+probrej k=10 two-sided  GL   vs base: max|dp| = 3.69e-09 (upper) 2.56e-08 (lower)  [JT r=18 error ~1e-7]
+probrej k=10 two-sided  GL   vs base r=80: max|dp| = 1.08e-11 (upper) 7.44e-11 (lower)
+gsbound1 k=10 one-sided v2JT vs base: max|db| = 4.44e-16  max|dplo| = 2.75e-89
+gsbound1 k=10 one-sided GL   vs base: max|db| = 5.85e-07  (b_GL[9]=1.99069596 b_base[9]=1.99069637)
+gsbound  k=10 symmetric v2JT vs base: max|da| = 4.44e-16 max|db| = 4.44e-16
+
+--- timings (median-ish over repeats) ---
+probrej k=3 two-sided   base                       12.64 us
+probrej k=3 two-sided   v2 JT                      10.84 us
+probrej k=3 two-sided   v2 GL                       1.89 us
+probrej k=3 one-sided   base                       85.34 us
+probrej k=3 one-sided   v2 JT                      61.25 us
+probrej k=3 one-sided   v2 GL                       8.14 us
+probrej k=10 two-sided  base                       94.41 us
+probrej k=10 two-sided  v2 JT                      76.61 us
+probrej k=10 two-sided  v2 GL                      14.50 us
+probrej k=10 one-sided  base                      647.81 us
+probrej k=10 one-sided  v2 JT                     484.02 us
+probrej k=10 one-sided  v2 GL                     126.61 us
+gsbound1 k=3 one-sided  base                      125.48 us
+gsbound1 k=3 one-sided  v2 JT                      80.64 us
+gsbound1 k=3 one-sided  v2 GL                      13.47 us
+gsbound1 k=3 with lower base                       24.50 us
+gsbound1 k=3 with lower v2 JT                      16.09 us
+gsbound1 k=3 with lower v2 GL                       3.60 us
+gsbound1 k=10 one-sided base                      799.27 us
+gsbound1 k=10 one-sided v2 JT                     586.33 us
+gsbound1 k=10 one-sided v2 GL                     186.93 us
+gsbound  k=10 symmetric base                      567.71 us
+gsbound  k=10 symmetric v2 JT                     481.11 us
+gsbound  k=10 symmetric v2 GL                     105.70 us

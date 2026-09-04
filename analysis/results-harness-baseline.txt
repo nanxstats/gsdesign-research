@@ -1,0 +1,18 @@
+exp():          3.07 ns/call
+Rf_pnorm5():   15.06 ns/call (x in [-3,3])
+erfc()-based:   6.69 ns/call (x in [-3,3])
+Rf_pnorm5():   12.72 ns/call (x in [-10,10])
+erfc()-based:   6.77 ns/call (x in [-10,10])
+max rel diff pnorm vs erfc on [-38,8]: 1.648e-08
+grid size m+1: full=213  [a3,b3] at analysis1 theta=0: 81  one-sided [-20,b]: 181  [-Inf,b]: 181
+hupdate one-sided grids m1=181 m2=169:    76.47 us  (2.50 ns per pair)
+hupdate two-sided grids m1=81 m2=41:     8.36 us  (2.52 ns per pair)
+hupdate full grids m1=213 m2=213:        113.44 us  (2.50 ns per pair)
+probrej k=3 two-sided:     12.76 us
+probrej k=3 one-sided:     85.03 us
+probrej k=10 two-sided:    94.16 us
+probrej k=10 one-sided:   645.92 us
+gsbound1 k=3 one-sided (a=-20):    125.29 us  b=3.090232 2.510510 2.001105
+gsbound1 k=3 with lower bound:      24.18 us  b=3.090232 2.510128 1.963115
+gsbound1 k=10 one-sided (a=-20):   802.72 us
+gsbound  k=10 symmetric:           569.10 us
