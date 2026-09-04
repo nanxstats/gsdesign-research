@@ -17,3 +17,4 @@ gsDesign = "keaven/gsDesign@v3.11.0"
 rpact = "rpact-com/rpact@v4.4.0"
 
 [references]
+r-manuals = "rstudio/r-manuals@gh-pages"
