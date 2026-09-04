@@ -1,0 +1,74 @@
+info: gsquad: no previous manifest, creating one from scratch
+info: leanprover-community/mathlib: cloning https://github.com/leanprover-community/mathlib4
+info: leanprover-community/mathlib: checking out revision 'db584cd6d46c92f209a44c0f1c829460d327499d'
+info: plausible: cloning https://github.com/leanprover-community/plausible
+info: plausible: checking out revision 'b7eb3304aeae834b12dda98993a37f6a41f6f0bb'
+info: LeanSearchClient: cloning https://github.com/leanprover-community/LeanSearchClient
+info: LeanSearchClient: checking out revision '5f4d51b81cbd3f6b32b156bfad9056621a040404'
+info: importGraph: cloning https://github.com/leanprover-community/import-graph
+info: importGraph: checking out revision '16f02aa7642864af59f1ff0e384a015994db9118'
+info: proofwidgets: cloning https://github.com/leanprover-community/ProofWidgets4
+info: proofwidgets: checking out revision '4be2e3d5087eeb272cf5a8853b8f9dd025ef5957'
+info: aesop: cloning https://github.com/leanprover-community/aesop
+info: aesop: checking out revision '3448c0bcc5ce01b2d1546e483ec3620e32df3d0e'
+info: Qq: cloning https://github.com/leanprover-community/quote4
+info: Qq: checking out revision '92c15be17b7caf78c2ad767ec40f89052d908d81'
+info: batteries: cloning https://github.com/leanprover-community/batteries
+info: batteries: checking out revision '4488d40d070b9700d4d5a6aa342f0d40c31b2a2d'
+info: Cli: cloning https://github.com/leanprover/lean4-cli
+info: Cli: checking out revision '6130a47896ce867c6a4a55373441e59e565bad0f'
+info: mathlib: running post-update hooks
+✔ [2/6] Built Cache.Cli (233ms)
+✔ [3/6] Built Cache.Lean (254ms)
+✔ [7/27] Built Cache.Infra (230ms)
+✔ [8/27] Built Batteries.Tactic.OpenPrivate (474ms)
+✔ [9/27] Built Cache.Cli:c.o (982ms)
+✔ [10/27] Built Cache.Lean:c.o (1.0s)
+✔ [11/27] Built Cache.Infra:c.o (787ms)
+✔ [12/27] Built Cache.IO (681ms)
+✔ [13/27] Built Batteries.Tactic.OpenPrivate:c.o (918ms)
+✔ [14/27] Built Cache.Hashing (408ms)
+✔ [15/27] Built Cache.IO:c.o (585ms)
+✔ [16/27] Built Cache.Hashing:c.o (170ms)
+✔ [17/27] Built Cache.Requests (843ms)
+✔ [18/27] Built Cache.Marker (325ms)
+✔ [19/27] Built Cache.Marker:c.o (59ms)
+✔ [20/27] Built Cache.Query (363ms)
+✔ [21/27] Built Cache.Query:c.o (125ms)
+✔ [22/27] Built Cache.Warning (354ms)
+✔ [23/27] Built Cache.Requests:c.o (1.0s)
+✔ [24/27] Built Cache.Warning:c.o (111ms)
+✔ [25/27] Built Cache.Main (547ms)
+✔ [26/27] Built Cache.Main:c.o (377ms)
+✔ [27/27] Built cache:exe (1.1s)
+Current branch: HEAD
+Using cache from origin: (some leanprover-community/mathlib4)
+Decompressing 8689 already-cached file(s) (1 already decompressed)
+No files to download
+Decompressed 8689 already-cached file(s)
+Completed successfully in 11343 ms!
+name = "gsquad"
+version = "0.1.0"
+keywords = ["math"]
+defaultTargets = ["Gsquad"]
+
+[leanOptions]
+pp.unicode.fun = true # pretty-prints `fun a ↦ b`
+relaxedAutoImplicit = false
+weak.linter.mathlibStandardSet = true
+maxSynthPendingDepth = 3
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.33.0"
+
+[[lean_lib]]
+name = "Gsquad"
+leanprover/lean4:v4.33.0
+--- toolchain/lakefile above; starting cache get ---
+Current branch: HEAD
+Using cache from origin: (some leanprover-community/mathlib4)
+No files to download
+Already decompressed 8690 file(s)
+CACHE_DONE exit=0
