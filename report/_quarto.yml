@@ -11,6 +11,13 @@ format:
     embed-resources: true
     code-fold: true
     code-tools: false
+    code-links:
+      - text: GitHub repository
+        icon: github
+        href: https://github.com/nanxstats/gsdesign-research
+      - text: Report source
+        icon: file-code
+        href: https://github.com/nanxstats/gsdesign-research/blob/main/report/index.qmd
     fig-width: 7.5
     fig-height: 4.2
     df-print: kable
